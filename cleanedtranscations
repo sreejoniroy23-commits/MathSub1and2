@@ -1,0 +1,169 @@
+#SreejoniRoy
+
+
+import pandas as pd          # 'pd' is a short alias for the pandas library 
+import numpy as np           # 'np' is a short alias for numpy
+from pathlib import Path     # 'Path' helps build file paths in a safe/folder
+
+# Creating a base path for the transcations file. Path(".") means "the current folder".
+DATA_PATH = Path(".")
+
+# Building full paths to the input/output files.
+# The slash "/" is overloaded by Path to mean "join path parts".
+RAW_TX = DATA_PATH / "TaoYin_User_Transactions_v2.parquet"
+CLEAN_TX = DATA_PATH / "transactions_clean.parquet"
+
+
+
+# pd.read_parquet reads the parquet file into the DataFrame.
+tx = pd.read_parquet(RAW_TX)
+
+# shape uses a dot "." to access an "attribute" (a stored property) of the DataFrame.
+# It returns a (rows, columns) tuple. The comma "," separates items in the tuple.
+#printing the number of rows and columns
+print("Shape (rows, cols):", tx.shape)
+
+# .columns returns all column names. [:20] slices the first 20 items.
+print("\nFirst 20 columns:", list(tx.columns[:20]))
+
+# .head(5) prints the first 5 rows.
+print("\nPreview:")
+print(tx.head(5))
+
+
+
+# making a copy so i don't accidentally overwrite the original DataFrame in the memory.
+tx = tx.copy()
+
+# Converting column names to lowercase for consistency.
+# .columns accesses the list-like Index of names; .str.lower() converting each name to lower-case.
+tx.columns = tx.columns.str.lower()
+
+# expected list the columns.
+expected = [
+    "customer", "invoice", "invoice_date", "articlenr", "volume",
+    "sum1", "sum2", "postcode_delivery", "postcode_customer", "channel"
+]
+print("\nAll expected columns present?:", set(expected).issubset(set(tx.columns)))
+
+# Ensuring that all the key columns have the correct data types.
+# .astype("int64") converts the series to 64-bit integer.
+tx["customer"] = tx["customer"].astype("int64")
+tx["invoice"] = tx["invoice"].astype("int64")
+tx["articlenr"] = tx["articlenr"].astype("int64")
+
+# Parse dates. pd.to_datetime(...) converts text to datetime objects.
+tx["invoice_date"] = pd.to_datetime(tx["invoice_date"], errors="coerce")
+
+# Numeric money-type fields: coerce invalid strings to NaN (missing).
+tx["sum1"] = pd.to_numeric(tx["sum1"], errors="coerce")
+tx["sum2"] = pd.to_numeric(tx["sum2"], errors="coerce")
+
+# volume is quantity; making it an integer if it is in whole numbers. If not guaranteed, keeping it as a float.
+tx["volume"] = pd.to_numeric(tx["volume"], errors="coerce")
+
+# Postcodes are codes; they seem numeric in file/data. Keep as int64 if not missing.
+# If there are  missing values, using Int64 (nullable integer) instead of int64.
+tx["postcode_delivery"]  = pd.to_numeric(tx["postcode_delivery"], errors="coerce").astype("Int64")
+tx["postcode_customer"]  = pd.to_numeric(tx["postcode_customer"], errors="coerce").astype("Int64")
+
+# Channels are text; normalize the whitespace and keeping it as a string (pandas' string dtype).
+tx["channel"] = tx["channel"].astype("string").str.strip()
+
+
+
+# Counting rows before dropping the duplicates.
+before = tx.shape[0]
+
+# .drop_duplicates() removes rows that are exactly the same across all columns.
+# subset=[...] restricts the comparison to specific columns (optional).
+# keep="first" keeps the first occurrence and drops later duplicates.
+tx = tx.drop_duplicates(keep="first")
+
+after = tx.shape[0]
+print(f"\nDuplicate rows removed: {before - after}")
+
+
+
+# Dropping rows with missing essential fields:
+# .dropna(subset=[...]) removes rows if any of those columns have NaN.
+tx = tx.dropna(subset=["invoice_date", "articlenr", "volume", "sum2", "channel"])
+
+# Removing any non-sensical values:
+# volume should be more than 0 (no negative or zero quantities)
+tx = tx[tx["volume"] > 0]
+
+# sum2 is the final amount; it should be more than 0
+tx = tx[tx["sum2"] > 0]
+
+print("After validity filters, shape:", tx.shape)
+
+
+
+# In the transcation file, channel has values like "Tel 86041", "OTC 81812", "Web Order".
+# Making a clean label: the first word (letters only) at the start.
+# .str.extract(r'(^[A-Za-z]+)') uses a regular expression (regex).
+# r'...' is a raw string so backslashes are not treated specially by Python itself.
+tx["channel_clean"] = tx["channel"].str.extract(r'(^[A-Za-z]+)')
+
+# Some "Web Order" may become "Web". 
+# The curly braces { } create a dictionary: "key": "value", entries separated by commas.
+mapping = {
+    "Web": "Web",
+    "Tel": "Tel",
+    "OTC": "OTC"
+}
+# .map(...) replaces values using the mapping; .fillna(...) fills any non-mapped with the original clean value.
+tx["channel_clean"] = tx["channel_clean"].map(mapping).fillna(tx["channel_clean"])
+
+# Making it a categorical variable (good for grouping and saves on memory).
+tx["channel_clean"] = tx["channel_clean"].astype("category")
+
+print("\nChannel counts:")
+print(tx["channel_clean"].value_counts(dropna=False))
+
+
+
+# For ANOVA on 'sum2', extreme outliers can dominate.
+# So I created a winsorized version: capping it at top 1% at the 99th percentile.
+# .quantile(0.99) returns the 99th percentile.
+p99 = tx["sum2"].quantile(0.99)
+
+# .clip(upper=p99) caps values above p99 to p99.
+tx["sum2_winsor"] = tx["sum2"].clip(upper=p99)
+
+print("\nWinsorization cap (99th percentile) for sum2:", float(p99))
+
+
+
+# .describe() gives summary stats; .groupby(...).size() counts per group.
+print("\nSummary stats (sum2 and sum2_winsor):")
+print(tx[["sum2", "sum2_winsor"]].describe())
+
+print("\nCounts by channel_clean:")
+print(tx.groupby("channel_clean").size())
+
+# Checking the date range to ensure the period looks right.
+print("\nInvoice date range:", tx["invoice_date"].min(), "→", tx["invoice_date"].max())
+
+
+
+# Saving the cleaned file as a parquet (fast, keeps dtypes). index=False prevents writing row numbers as a column.
+tx.to_parquet(CLEAN_TX, index=False)
+
+print("\nSaved cleaned transactions to:", CLEAN_TX.resolve())
+print("Final shape:", tx.shape)
+
+
+
+#The transaction dataset was standardized by converting column names to lower case and 
+#coercing appropriate data types (customer, invoice, articlenr as integers; invoice_date 
+#as datetime; sum1/sum2 as numeric).
+#  Duplicate rows were removed. 
+# Records with missing or invalid values in essential fields 
+# (invoice_date, articlenr, volume, sum2, channel) were dropped, 
+# and non-sensical values (e.g., volume ≤ 0 or sum2 ≤ 0) were filtered out. 
+#The channel field was normalized into a categorical channel_clean (Web/Tel/OTC)
+#using regular expression extraction and mapping. To reduce the impact of extreme outliers 
+#for ANOVA, a winsorized measure sum2_winsor was created by capping at the 99th percentile. 
+#The cleaned table was saved as a parquet file for subsequent merging and modeling.”
