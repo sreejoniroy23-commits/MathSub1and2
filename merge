@@ -1,0 +1,59 @@
+#SreejoniRoy
+
+#Merging the two files
+
+import pandas as pd
+from pathlib import Path
+
+DATA_PATH = Path(".")
+
+CLEAN_FEATURES = DATA_PATH / "item_features_clean.parquet"
+CLEAN_TX = DATA_PATH / "transactions_clean.parquet"
+#now I am using the cleaned files.
+
+
+# loading the cleaned item features table
+features = pd.read_parquet(CLEAN_FEATURES)
+
+# loading the cleaned transactions table
+tx = pd.read_parquet(CLEAN_TX)
+
+print("Features shape:", features.shape)
+print("Transactions shape:", tx.shape)
+
+
+
+# Merging the two tables using the product key.
+# how="left" means: keep all transaction rows, match features where it is possible.
+merged = tx.merge(
+    features,
+    on="articlenr",       # a column that both tables have
+    how="left"            # keep ALL rows from tx, add features if they exist
+)
+
+print("Merged shape:", merged.shape)
+print(merged.head(5))
+
+
+
+missing_features = merged["ETIM"].isna().mean() * 100
+print(f"% of merged rows missing item features: {missing_features:.2f}%")
+
+
+
+anova_df = merged[["sum2_winsor", "channel_clean"]].dropna()
+
+print("ANOVA dataset shape:", anova_df.shape)
+print(anova_df.head())
+
+#i only need sum2_winsor and channel_clean for the anova/merge
+
+
+
+#The cleaned item-feature dataset was merged with the cleaned transaction dataset 
+# using the common product key articlenr. 
+# A left join was applied to ensure all transaction records were preserved. 
+# This produced a combined dataset containing transaction-level information 
+# (sum2, volume, channel, date) alongside product-level attributes 
+# (ETIM, statistiek_hoofdgroep, EF-features). 
+# A final filtered dataset containing sum2_winsor and channel_clean was created for the ANOVA analysis.
